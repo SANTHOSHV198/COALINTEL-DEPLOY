@@ -37,7 +37,10 @@ def _run_ministry_sync_job(source_id: int, user_id: int) -> None:
             job_db.commit()
     finally:
         if connector is not None:
-            connector.close()
+            try:
+                connector.close()
+            except Exception:
+                logger.exception("Official source connector cleanup failed for source %s", source_id)
         job_db.close()
 
 
