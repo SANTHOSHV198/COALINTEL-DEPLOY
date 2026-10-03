@@ -167,6 +167,86 @@ class TestDocumentProcessingReliability(unittest.TestCase):
         # Cleanup test file
         delete_uploaded_file(file_path)
 
+    def _make_knowledge_index_test_document(self, suffix):
+        sample_content = b"ECL Rajmahal Open Cast Mine Coal Production 15.5 MT in FY 2023-24\n"
+        file_path = save_uploaded_file(sample_content, f"hash_knowledge_{suffix}", f"knowledge_{suffix}.csv")
+        doc = Document(
+            filename=f"knowledge_{suffix}.csv",
+            file_path=file_path,
+            file_hash=f"hash_knowledge_{suffix}",
+            file_type="CSV",
+            file_size_bytes=len(sample_content),
+            subsidiary="ECL",
+            fiscal_year="2023-24",
+            status="PENDING",
+            uploaded_by=self.admin_user.id,
+        )
+        self.db.add(doc)
+        self.db.commit()
+        self.db.refresh(doc)
+        return doc, file_path
+
+    def test_03b_pipeline_invokes_postgres_knowledge_index_after_authoritative_commit(self):
+        doc, file_path = self._make_knowledge_index_test_document("success")
+
+        def verify_authoritative_commit(db, document_id):
+            current = db.get(Document, document_id)
+            self.assertEqual(current.status, "PARSED")
+            return {"chunk_count": 1, "embedding_status": "READY"}
+
+        try:
+            with patch(
+                "app.services.processing_pipeline.index_document_knowledge",
+                side_effect=verify_authoritative_commit,
+            ) as knowledge_index, patch(
+                "app.services.processing_pipeline.add_chunks_to_vector_store",
+                return_value=True,
+            ) as legacy_index:
+                self.assertTrue(execute_document_processing_pipeline(self.db, doc.id))
+
+            knowledge_index.assert_called_once_with(self.db, doc.id)
+            legacy_index.assert_called_once()
+        finally:
+            delete_uploaded_file(file_path)
+
+    def test_03c_knowledge_index_failure_does_not_fail_pipeline(self):
+        doc, file_path = self._make_knowledge_index_test_document("failure")
+
+        try:
+            with patch(
+                "app.services.processing_pipeline.index_document_knowledge",
+                side_effect=RuntimeError("knowledge store unavailable"),
+            ) as knowledge_index, patch(
+                "app.services.processing_pipeline.add_chunks_to_vector_store",
+                return_value=True,
+            ) as legacy_index:
+                self.assertTrue(execute_document_processing_pipeline(self.db, doc.id))
+
+            knowledge_index.assert_called_once_with(self.db, doc.id)
+            legacy_index.assert_called_once()
+            self.db.refresh(doc)
+            self.assertEqual(doc.status, "PARSED")
+            self.assertIn(doc.processing_status, {"READY", "REVIEW_RECOMMENDED"})
+        finally:
+            delete_uploaded_file(file_path)
+
+    def test_03d_legacy_chroma_indexing_remains_in_pipeline(self):
+        doc, file_path = self._make_knowledge_index_test_document("legacy")
+
+        try:
+            with patch(
+                "app.services.processing_pipeline.index_document_knowledge",
+                return_value={"chunk_count": 1, "embedding_status": "READY"},
+            ), patch(
+                "app.services.processing_pipeline.add_chunks_to_vector_store",
+                return_value=True,
+            ) as legacy_index:
+                self.assertTrue(execute_document_processing_pipeline(self.db, doc.id))
+
+            legacy_index.assert_called_once()
+        finally:
+            delete_uploaded_file(file_path)
+
     def test_04_pipeline_missing_file_failure(self):
         """Verify pipeline safely fails and sets error_message if physical storage file is missing."""
         missing_doc = Document(

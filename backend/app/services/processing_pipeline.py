@@ -18,6 +18,7 @@ from app.services.domain_extraction_service import (
     classify_document_authority,
 )
 from app.services.vector_store_service import add_chunks_to_vector_store, delete_document_vectors
+from app.services.knowledge_retrieval_service import index_document_knowledge
 
 logger = logging.getLogger(__name__)
 
@@ -411,7 +412,35 @@ def execute_document_processing_pipeline(db: Session, document_id: int) -> bool:
             f"Status -> PARSED ({len(all_chunks)} chunks, {len(all_metrics)} metrics stored)."
         )
 
-        # Step 6: Optional semantic vector indexing.
+        # Step 6: Optional PostgreSQL knowledge indexing.
+        # This runs only after authoritative pages, tables, structured facts,
+        # legacy chunks, and metrics have been committed.  It is deliberately
+        # non-fatal: the PostgreSQL extraction result remains valid when the
+        # optional Step 3 table/model is unavailable or indexing fails.
+        try:
+            stage = "optional_knowledge_indexing"
+            knowledge_started = time.perf_counter()
+            knowledge_result = index_document_knowledge(db, doc.id)
+            logger.info(
+                "Document #%s knowledge indexing completed result=%s seconds=%.3f",
+                doc.id,
+                knowledge_result,
+                time.perf_counter() - knowledge_started,
+            )
+        except Exception as knowledge_err:
+            # The authoritative commit above is intentionally preserved.  A
+            # failed optional indexing transaction is rolled back before the
+            # existing legacy Chroma path continues.
+            db.rollback()
+            logger.warning(
+                "Document #%s knowledge indexing failed non-fatally "
+                "error_type=%s error=%s. PostgreSQL extraction remains valid.",
+                doc.id,
+                type(knowledge_err).__name__,
+                str(knowledge_err)[:300],
+            )
+
+        # Step 7: Optional legacy Chroma vector indexing.
         # Failure here must never invalidate the authoritative PostgreSQL data.
 
         if all_chunks:
