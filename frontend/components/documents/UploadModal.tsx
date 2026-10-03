@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Upload, X, FileText, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
@@ -42,6 +43,35 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, isUploading, onClose]);
+
+  React.useEffect(() => {
+    if (!isOpen || typeof window === 'undefined') return;
+
+    // AppShell's page-enter animation applies a transform to <main>. Keep the
+    // dashboard in place while portaling the modal to <body> so fixed layout
+    // remains relative to the viewport.
+    const scrollY = window.scrollY;
+    const body = document.body;
+    const previous = {
+      overflow: body.style.overflow,
+      position: body.style.position,
+      top: body.style.top,
+      width: body.style.width,
+    };
+
+    body.style.overflow = 'hidden';
+    body.style.position = 'fixed';
+    body.style.top = `-${scrollY}px`;
+    body.style.width = '100%';
+
+    return () => {
+      body.style.overflow = previous.overflow;
+      body.style.position = previous.position;
+      body.style.top = previous.top;
+      body.style.width = previous.width;
+      window.scrollTo(0, scrollY);
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -158,16 +188,18 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
-  return (
+  if (typeof document === 'undefined') return null;
+
+  return createPortal((
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0E1113]/80 backdrop-blur-sm animate-fade-in"
+      className="fixed inset-0 z-50 flex min-h-full items-center justify-center overflow-hidden p-4 bg-[#0E1113]/80 backdrop-blur-sm animate-fade-in"
       onClick={() => !isUploading && onClose()}
       role="dialog"
       aria-modal="true"
       aria-label="Ingest Mining Document Modal"
     >
       <div
-        className="relative w-full max-w-xl p-6 rounded-lg bg-[#1C2226] border border-[#30383D] shadow-2xl space-y-6 text-[#E8ECEB] animate-slide-up"
+        className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto overscroll-contain p-6 rounded-lg bg-[#1C2226] border border-[#30383D] shadow-2xl space-y-6 text-[#E8ECEB] animate-slide-up"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -313,5 +345,5 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         </form>
       </div>
     </div>
-  );
+  ), document.body);
 };
